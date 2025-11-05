@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Extrair Telefone do Restaurante (iFood)</title>
+  <style>
+    :root { --bg:#0b1020; --card:#121a35; --muted:#8fa0ff; --text:#e8ecff; --accent:#6aa2ff; --ok:#38d39f; --warn:#ffd166; --err:#ff6b6b; }
+    *{box-sizing:border-box;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,"Helvetica Neue",Arial,sans-serif}
+    body{margin:0;background:linear-gradient(180deg,#0b1020,#0b1020 40%,#0e1326);color:var(--text);}
+    .wrap{max-width:900px;margin:32px auto;padding:0 16px}
+    .card{background:var(--card);border:1px solid #1f2b5c;border-radius:16px;padding:20px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+    h1{font-weight:800;letter-spacing:.2px;margin:0 0 4px}
+    .sub{color:#b8c3ff;margin:0 0 18px}
+    label{display:block;font-size:14px;color:#c9d4ff;margin:10px 0 6px}
+    input, textarea{width:100%;background:#0b1330;color:var(--text);border:1px solid #263575;border-radius:12px;padding:12px 14px;font-size:15px}
+    textarea{min-height:120px;resize:vertical}
+    input[readonly]{opacity:.9}
+    .row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:end}
+    .btn{appearance:none;border:0;border-radius:12px;padding:12px 16px;font-weight:700;letter-spacing:.2px;background:var(--accent);color:#081027;cursor:pointer;box-shadow:0 6px 18px rgba(94,142,255,.35)}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    .pill{display:inline-flex;gap:8px;align-items:center;background:#0b1330;border:1px solid #263575;color:#cfe0ff;padding:8px 12px;border-radius:999px;font-size:12px}
+    .grid{display:grid;gap:16px}
+    .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    .muted{color:#94a3ff}
+    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace}
+    pre{white-space:pre-wrap;background:#0b1330;border:1px solid #263575;border-radius:12px;padding:14px;max-height:260px;overflow:auto}
+    .ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)}
+    footer{margin:26px 0 6px;color:#9bb0ff;font-size:12px;text-align:center}
+    @media (max-width: 760px){ .cols{grid-template-columns:1fr} .row{grid-template-columns:1fr} }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Extrair Telefone do Restaurante (iFood)</h1>
+      <p class="sub">Cole o link do restaurante do iFood e eu busco o <strong>telefone</strong> no código-fonte (termos: <em>number/número</em>, <em>phone/telefone</em>, <em>whatsapp</em>).</p>
+
+      <div class="grid" id="app">
+        <div>
+          <label for="link">Link do restaurante (ex.: https://www.ifood.com.br/delivery/...)</label>
+          <div class="row">
+            <input id="link" type="url" placeholder="Cole aqui o link completo do restaurante" />
+            <button class="btn" id="btnFetch">Extrair</button>
+          </div>
+          <div style="margin-top:8px" class="muted">
+            Dica: funciona mesmo com CORS (usa um leitor público só de texto). Se o iFood mudar a estrutura, use o <em>Plano B</em> (colar código-fonte).
+          </div>
+        </div>
+
+        <div class="cols">
+          <div>
+            <label for="saida">Telefone encontrado</label>
+            <input id="saida" type="text" placeholder="— aguardando —" readonly />
+          </div>
+          <div>
+            <label for="fonte">Origem</label>
+            <input id="fonte" type="text" placeholder="—" readonly />
+          </div>
+        </div>
+
+        <div class="cols">
+          <div>
+            <span class="pill">Plano A: buscar direto do link</span>
+            <pre id="log" class="mono muted">Pronto para extrair…</pre>
+          </div>
+          <div>
+            <span class="pill">Plano B: colar código-fonte manualmente</span>
+            <label for="paste">Cole o HTML completo da página (Ctrl+U &gt; copiar tudo)</label>
+            <textarea id="paste" placeholder="Cole aqui o código-fonte bruto…"></textarea>
+            <button class="btn" id="btnParsePaste" style="margin-top:8px">Extrair do código colado</button>
+          </div>
+        </div>
+
+        <details>
+          <summary class="pill">Ver padrões de extração usados</summary>
+          <pre class="mono muted" id="patterns"></pre>
+        </details>
+      </div>
+    </div>
+    <footer>Feito com ♥ para uso interno. Este utilitário lê somente texto público e não executa scripts de terceiros.</footer>
+  </div>
+
+<script>
+  const el = (id) => document.getElementById(id);
+  const link = el('link');
+  const btnFetch = el('btnFetch');
+  const saida = el('saida');
+  const fonte = el('fonte');
+  const log = el('log');
+  const paste = el('paste');
+  const btnParsePaste = el('btnParsePaste');
+  const patternsBox = el('patterns');
+
+  // ===== Heurísticas para encontrar TELEFONE =====
+  // 1) Chaves típicas: telephone, phone, whatsappNumber, number, número, etc.
+  // 2) Padrões BR com/sem +55
+  const PHONE_KEY_RX = /\b(telephone|phone|contactPhone|contact_number|whatsappNumber|whatsapp|number|número|numero)\b"?\s*:\s*"?([^"\n\r<>{}]{6,})"?/gi;
+  const PHONE_NEAR_RX = /(?:telephone|phone|telefone|whatsapp|number|número|numero)[^\d\+]{0,50}(\+?\d[\d\s().-]{7,}\d)/gi;
+  const PHONE_E164_BR = /\+55\s*\(?\d{2}\)?\s*\d{4,5}[\s-]?\d{4}/g;
+  const PHONE_BR_LOCAL = /\(?(?:1\d|2\d|3\d|4\d|5\d|6\d|7\d|8\d
