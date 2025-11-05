@@ -92,10 +92,209 @@
   const btnParsePaste = el('btnParsePaste');
   const patternsBox = el('patterns');
 
-  // ===== Heurísticas para encontrar TELEFONE =====
-  // 1) Chaves típicas: telephone, phone, whatsappNumber, number, número, etc.
-  // 2) Padrões BR com/sem +55
-  const PHONE_KEY_RX = /\b(telephone|phone|contactPhone|contact_number|whatsappNumber|whatsapp|number|número|numero)\b"?\s*:\s*"?([^"\n\r<>{}]{6,})"?/gi;
-  const PHONE_NEAR_RX = /(?:telephone|phone|telefone|whatsapp|number|número|numero)[^\d\+]{0,50}(\+?\d[\d\s().-]{7,}\d)/gi;
+  const PHONE_KEY_RX = /\b(telephone|phone|contactPhone|contact_number|contactNumber|whatsappNumber|whatsapp|number|número|numero)\b"?'?\s*:\s*"?'?([^"'\n\r<>{}]{6,})"?'?/gi;
+  const PHONE_NEAR_RX = /(?:telephone|phone|telefone|whatsapp|zap|contato|contact|number|número|numero|fone)[^\d\+]{0,50}(\+?\d[\d\s().-]{7,}\d)/gi;
   const PHONE_E164_BR = /\+55\s*\(?\d{2}\)?\s*\d{4,5}[\s-]?\d{4}/g;
-  const PHONE_BR_LOCAL = /\(?(?:1\d|2\d|3\d|4\d|5\d|6\d|7\d|8\d
+  const PHONE_BR_LOCAL = /\(?0?[1-9]\d\)?\s*\d{4,5}[\s-]?\d{4}/g;
+
+  const PATTERNS = [
+    { label: 'Chaves JSON com telephone/phone/whatsapp', regex: PHONE_KEY_RX, extract: (match) => match[2] },
+    { label: 'Termos próximos (telefone/whatsapp)', regex: PHONE_NEAR_RX, extract: (match) => match[1] },
+    { label: 'Formato internacional +55', regex: PHONE_E164_BR, extract: (match) => match[0] },
+    { label: 'Formato brasileiro com DDD', regex: PHONE_BR_LOCAL, extract: (match) => match[0] },
+  ];
+
+  patternsBox.textContent = PATTERNS.map((p, index) => `${index + 1}. ${p.label}\n   ${p.regex}`).join('\n\n');
+
+  function decodeEscapes(value) {
+    if (!value) return '';
+    return value
+      .replace(/\\u([\dA-Fa-f]{4})/g, (_, code) => String.fromCharCode(parseInt(code, 16)))
+      .replace(/\\x([\dA-Fa-f]{2})/g, (_, code) => String.fromCharCode(parseInt(code, 16)))
+      .replace(/\\\//g, '/')
+      .replace(/\\"/g, '"')
+      .replace(/\\n|\\r|\\t/g, ' ');
+  }
+
+  function formatLocalPhone(digits) {
+    if (digits.length === 11) {
+      return `(${digits.slice(0, 2)}) ${digits.slice(2, 7)}-${digits.slice(7)}`;
+    }
+    if (digits.length === 10) {
+      return `(${digits.slice(0, 2)}) ${digits.slice(2, 6)}-${digits.slice(6)}`;
+    }
+    if (digits.length === 9) {
+      return `${digits.slice(0, 5)}-${digits.slice(5)}`;
+    }
+    if (digits.length === 8) {
+      return `${digits.slice(0, 4)}-${digits.slice(4)}`;
+    }
+    return null;
+  }
+
+  function normalizePhone(raw) {
+    if (!raw) return null;
+    const decoded = decodeEscapes(raw).replace(/\s+/g, ' ').trim();
+    if (!decoded) return null;
+    const digitsOnly = decoded.replace(/\D+/g, '');
+    if (digitsOnly.length < 8) return null;
+
+    let localDigits = digitsOnly;
+    let prefix = '';
+
+    if (decoded.startsWith('+55')) {
+      prefix = '+55 ';
+      localDigits = digitsOnly.replace(/^55/, '');
+    } else if (digitsOnly.length > 11 && digitsOnly.startsWith('55')) {
+      prefix = '+55 ';
+      localDigits = digitsOnly.slice(2);
+    }
+
+    let formatted = formatLocalPhone(localDigits);
+    if (formatted) {
+      return `${prefix}${formatted}`.trim();
+    }
+
+    if (!prefix) {
+      formatted = formatLocalPhone(digitsOnly);
+      if (formatted) {
+        return formatted;
+      }
+    }
+
+    return `${prefix}${decoded}`.trim();
+  }
+
+  function extractPhone(text) {
+    if (!text) return null;
+    const searchSpace = decodeEscapes(text);
+
+    for (const pattern of PATTERNS) {
+      pattern.regex.lastIndex = 0;
+      let match;
+      while ((match = pattern.regex.exec(searchSpace)) !== null) {
+        const candidate = pattern.extract(match);
+        const normalized = normalizePhone(candidate);
+        if (normalized) {
+          const start = Math.max(0, match.index - 40);
+          const end = Math.min(searchSpace.length, match.index + (match[0] ? match[0].length : 0) + 40);
+          const snippet = searchSpace.slice(start, end).replace(/\s+/g, ' ').trim();
+          return {
+            normalized,
+            raw: decodeEscapes(candidate),
+            pattern: pattern.label,
+            snippet,
+          };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function appendLog(message) {
+    if (!log.textContent || log.textContent === 'Pronto para extrair…') {
+      log.textContent = message;
+    } else {
+      log.textContent += `\n${message}`;
+    }
+  }
+
+  function startRun(label) {
+    saida.value = '';
+    fonte.value = '';
+    log.textContent = `${label} iniciado…`;
+  }
+
+  function showResult(result, originLabel) {
+    if (result) {
+      saida.value = result.normalized;
+      fonte.value = `${originLabel} • ${result.pattern}`;
+      appendLog(`✅ Telefone encontrado (${result.pattern}).`);
+      if (result.snippet) {
+        appendLog(`Trecho: ${result.snippet}`);
+      }
+    } else {
+      saida.value = '';
+      fonte.value = `${originLabel} • não encontrado`;
+      appendLog('❌ Nenhum telefone encontrado. Verifique se o número está disponível no HTML.');
+    }
+  }
+
+  function setBusy(isBusy) {
+    btnFetch.disabled = isBusy;
+    link.disabled = isBusy;
+    if (isBusy) {
+      btnFetch.textContent = 'Aguarde…';
+    } else {
+      btnFetch.textContent = 'Extrair';
+    }
+  }
+
+  async function handleFetch() {
+    const rawUrl = link.value.trim();
+    if (!rawUrl) {
+      appendLog('⚠️ Informe um link válido do iFood.');
+      link.focus();
+      return;
+    }
+
+    const normalizedUrl = /^https?:\/\//i.test(rawUrl) ? rawUrl : `https://${rawUrl}`;
+
+    let finalUrl;
+    try {
+      finalUrl = new URL(normalizedUrl).toString();
+    } catch (error) {
+      appendLog('⚠️ URL inválida. Confira se colou o link completo do restaurante.');
+      return;
+    }
+
+    startRun('Plano A');
+    appendLog('→ Buscando conteúdo via leitor público (https://r.jina.ai)…');
+
+    setBusy(true);
+    try {
+      const proxied = `https://r.jina.ai/${finalUrl}`;
+      const response = await fetch(proxied, { cache: 'no-store' });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const html = await response.text();
+      appendLog(`→ Conteúdo recebido (${html.length.toLocaleString('pt-BR')} caracteres).`);
+      const result = extractPhone(html);
+      showResult(result, 'Link direto');
+    } catch (error) {
+      console.error(error);
+      appendLog(`❌ Erro ao buscar o link: ${error.message}`);
+      fonte.value = 'Erro ao baixar';
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handlePasteExtraction() {
+    const html = paste.value.trim();
+    if (!html) {
+      appendLog('⚠️ Cole o código-fonte bruto no campo do Plano B.');
+      paste.focus();
+      return;
+    }
+
+    startRun('Plano B');
+    appendLog('→ Processando conteúdo colado…');
+    const result = extractPhone(html);
+    showResult(result, 'Código colado');
+  }
+
+  btnFetch.addEventListener('click', handleFetch);
+  btnParsePaste.addEventListener('click', handlePasteExtraction);
+  link.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      handleFetch();
+    }
+  });
+</script>
+</body>
+</html>
